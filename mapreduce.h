@@ -62,6 +62,9 @@ typedef int (*reduce_fn)(struct map_reduce *mr, int outfd, int nmaps);
  */
 struct map_reduce {
 	/* add your fields here */
+	map_fn mapfn;
+	reduce_fn reducefn;
+	int nmaps;
 };
 
 /**
