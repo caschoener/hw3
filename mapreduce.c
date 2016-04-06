@@ -24,13 +24,24 @@
 struct map_reduce *
 mr_create(map_fn map, reduce_fn reduce, int threads)
 {
-	return NULL;
+	struct map_reduce * mr = malloc(sizeof(struct map_reduce));
+	
+	int * n = malloc(sizeof(int)); //malloc space for int n
+	*n = threads;
+	
+	mr -> mapfn = map; //no need to malloc since map is a ptr to code
+	mr -> reducefn = reduce; //same as above
+	mr -> nmaps = n; 
+	
+	return mr;
 }
 
 /* Destroys and cleans up an existing instance of the MapReduce framework */
 void
 mr_destroy(struct map_reduce *mr)
 {
+	free(mr->nmaps); //free int ptr
+	free(mr); //free the structure ptr
 }
 
 /* Begins a multithreaded MapReduce operation */
