@@ -28,10 +28,26 @@ mr_create(map_fn map, reduce_fn reduce, int threads)
 	
 	int * n = malloc(sizeof(int)); //malloc space for int n
 	*n = threads;
-	
+
 	mr -> mapfn = map; //no need to malloc since map is a ptr to code
 	mr -> reducefn = reduce; //same as above
-	mr -> nmaps = n; 
+	mr -> nmaps = n; //nmaps is pointer to int
+	mr->p_array = malloc(sizeof(pthread_t)*threads);
+
+//replace with linked list from here down
+//counter to limit size, read from front write to back
+//pointer to tail updates every write
+//delete head after read and update pointer
+//when list is empty, write to node and THEN update map_reduce->head pointer
+//consume checks if head pointer is null
+//no need for locks ever!
+	mr-> mr_buffer = malloc(sizeof(int *)* threads);
+	for(int i = 0; i<threads;i++) 
+	{
+		(mr-> mr_buffer)[i] = malloc(MR_BUFFER_SIZE * sizeof(struct kvpair)); //pointer to pointer to pointer
+	}
+
+
 	
 	return mr;
 }
@@ -39,8 +55,16 @@ mr_create(map_fn map, reduce_fn reduce, int threads)
 /* Destroys and cleans up an existing instance of the MapReduce framework */
 void
 mr_destroy(struct map_reduce *mr)
-{
-	free(mr->nmaps); //free int ptr
+{		
+
+	for(int i = 0; i < *(mr->nmaps) ;i++) //free linked list
+	{
+		free((mr-> mr_buffer)[i]);
+	}	
+	free(mr-> mr_buffer);
+	free(mr->nmaps);
+	free(mr->p_array);
+
 	free(mr); //free the structure ptr
 }
 
@@ -48,6 +72,7 @@ mr_destroy(struct map_reduce *mr)
 int
 mr_start(struct map_reduce *mr, const char *inpath, const char *outpath)
 {
+
 	return 0;
 }
 

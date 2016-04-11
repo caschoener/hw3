@@ -16,6 +16,7 @@
 
 /* Header includes */
 #include <stdint.h>
+#include <pthread.h>
 
 /* Forward-declaration, the definition to edit is farther down */
 struct map_reduce;
@@ -64,7 +65,9 @@ struct map_reduce {
 	/* add your fields here */
 	map_fn mapfn;
 	reduce_fn reducefn;
-	int nmaps;
+	int *nmaps;
+	void **mr_buffer;
+	pthread_t *p_array
 };
 
 /**
@@ -175,4 +178,4 @@ int mr_produce(struct map_reduce *mr, int id, const struct kvpair *kv);
  */
 int mr_consume(struct map_reduce *mr, int id, struct kvpair *kv);
 
-#endif
+#endif         	 	    
