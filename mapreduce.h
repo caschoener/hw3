@@ -66,8 +66,9 @@ struct map_reduce {
 	map_fn mapfn;
 	reduce_fn reducefn;
 	int *nmaps;
-	void **mr_buffer;
-	pthread_t *p_array
+	kvpair *mr_buffer;
+	int *buffer_count;
+	pthread_t *p_array;
 };
 
 /**
