@@ -15,11 +15,15 @@
 #include <string.h>
 #include <stdio.h>
 #include <fcntl.h>
+#include <unistd.h>
 #include "mapreduce.h"
 
 
 /* Size of shared memory buffers */
 #define MR_BUFFER_SIZE 1024
+
+void map_helper(void*);
+void reduce_helper(void*);
 
 
 
@@ -93,19 +97,23 @@ int
 mr_start(struct map_reduce *mr, const char *inpath, const char *outpath)
 {
 	int i;
+	int error;
 	for (i = 0; i < *mr->nmaps;i++)
 	{
 		mr->args_array[i].mr = mr;
 		mr->args_array[i].infd = open(inpath, O_RDONLY);
 		mr->args_array[i].id = i;
 		mr->args_array[i].nmaps = *mr->nmaps;
-		pthread_create(&mr->p_array[i], NULL, (void*) mr->mapfn, (mr->args_array)+i);
+		error = pthread_create(&mr->p_array[i], NULL, (void*) &map_helper, (mr->args_array)+i);
+		if (error != 0)
+			return -1;
 	}
-	mr->rargs->mr = mr;
-	mr->rargs->outfd = open(outpath,O_RDWR |  O_CREAT);
-	mr->rargs->nmaps = *mr->nmaps;
-	pthread_create(&mr->p_array[*mr->nmaps], NULL, (void*) mr->reducefn, mr->rargs);
-
+	// mr->rargs->mr = mr;
+	// mr->rargs->outfd = open(outpath,O_RDWR |  O_CREAT);
+	// mr->rargs->nmaps = *mr->nmaps;
+	// error = pthread_create(&mr->p_array[*mr->nmaps], NULL, (void*) reduce_helper, mr->rargs);
+	// if (error != 0)
+	// 	return -1;
 	return 0;
 }
 
@@ -113,21 +121,26 @@ mr_start(struct map_reduce *mr, const char *inpath, const char *outpath)
 int
 mr_finish(struct map_reduce *mr)
 {
-	int r = 0;
-	int i;
-	void **val = NULL;
+	 int r = 0;
+	// int i;
+	// void *val = NULL;
 
 	// for (i = 0; i < *mr->nmaps;i++) //wait for each thread, then update id_finished.  Might be some optimization 
 	// {								//if we waited on all threads simultaneously
 	// 	pthread_join(mr->p_array[i], val);
-	// 	if (*(int*)*val != 0)
+	// 	if ((intptr_t)val != 0)
 	// 		r++;
 	// 	mr->id_finished[i] = 1;
 	// }
 	// pthread_join(mr->p_array[*mr->nmaps], val);
-	// if (*val != 0)
+	// if ((intptr_t)val != 0)
 	// 	r++;
-	return r;
+	// for (i = 0;i < *mr->nmaps;i++) //close file descriptors
+	// {
+	// 	close(mr->args_array[i].infd);
+	// }
+	// close(mr->rargs->outfd);
+	 return r;
 }
 
 /* Called by the Map function each time it produces a key-value pair */
@@ -139,8 +152,7 @@ mr_produce(struct map_reduce *mr, int id, const struct kvpair *kv)
 	while(mr->buffer_count[id] >= MR_BUFFER_SIZE)
 	{
 	}
-	if (mr->id_finished[id] == 1)
-		return 0;
+
 	pthread_mutex_lock(&(mr->lock_array[id]));
 	mr->buffer_count[id]++;
 
@@ -167,11 +179,13 @@ mr_produce(struct map_reduce *mr, int id, const struct kvpair *kv)
 int
 mr_consume(struct map_reduce *mr, int id, struct kvpair *kv)
 {
+
 	while(mr->buffer_count[id] != 0) //wait until element exists
 	{
+		if (mr->id_finished[id] == 1)
+			return 0;
 	}
 	pthread_mutex_lock(&(mr->lock_array[id]));//wait until write is finished
-
 	mr->buffer_count[id]--;
 
 	memcpy(kv, ((mr->mr_heads)[id])->kv, sizeof(struct kvpair));
@@ -198,5 +212,15 @@ mr_consume(struct map_reduce *mr, int id, struct kvpair *kv)
 	return 1;
 }
 
+void map_helper(void* a)
+{
+	struct map_args * args = (struct map_args*) a;
+	int val = args->mr->mapfn(args->mr, args->infd, args->id, args->nmaps);
+	// might wanna deal with errors here
+}
 
+void reduce_helper(void* a)
+{
+
+}
 

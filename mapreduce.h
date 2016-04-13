@@ -81,7 +81,6 @@ struct reduce_args{
 	int nmaps;
 };
 
-
 struct map_reduce {
 	/* add your fields here */
 	map_fn mapfn;
