@@ -12,26 +12,15 @@
 
 /* Header includes */
 #include <stdlib.h>
- #include <string.h>
-
+#include <string.h>
+#include <stdio.h>
+#include <fcntl.h>
 #include "mapreduce.h"
 
 
 /* Size of shared memory buffers */
 #define MR_BUFFER_SIZE 1024
 
-struct map_args{
-	struct map_reduce *mr;
-	int infd;
-	int id;
-	int nmaps;
-};
-
-struct reduce_args{
-	struct map_reduce *mr;
-	int outfd;
-	int nmaps;
-};
 
 
 
@@ -40,7 +29,10 @@ struct map_reduce *
 mr_create(map_fn map, reduce_fn reduce, int threads)
 {
 	struct map_reduce * mr = malloc(sizeof(struct map_reduce));
-	
+	if (mr ==NULL) //handle out of memory situation (I guess)
+	{
+		 return NULL;
+	}
 	int * n = malloc(sizeof(int)); //malloc space for int n
 	*n = threads;
 	
@@ -56,6 +48,9 @@ mr_create(map_fn map, reduce_fn reduce, int threads)
 	mr -> lock_array = malloc(sizeof(pthread_mutex_t)*threads); //one lock per thread for accessing count
 	mr -> id_finished = calloc(threads, sizeof(int));
 	mr -> reduce_finished = calloc(1, sizeof(int));
+	mr -> args_array = malloc(*mr->nmaps * sizeof(struct map_args));
+	mr -> rargs = malloc(sizeof(struct reduce_args));
+
 //replace with linked list from here down
 //counter to limit size, read from front write to back
 //pointer to tail updates every write
@@ -87,6 +82,8 @@ mr_destroy(struct map_reduce *mr)
 	free(mr-> p_array);
 	free(mr -> lock_array);
 	free(mr-> reduce_finished);
+	free(mr->args_array);
+	free(mr->rargs);
 
 	free(mr); //free the structure ptr
 }
@@ -96,15 +93,19 @@ int
 mr_start(struct map_reduce *mr, const char *inpath, const char *outpath)
 {
 	int i;
-	struct map_args* args_array = malloc(*mr->nmaps * sizeof(struct map_args));
 	for (i = 0; i < *mr->nmaps;i++)
 	{
-		args_array[i].mr = mr;
-		args_array[i].infd = //TODOOOOO
-		args_array[i].id = i;
-		args_array[i].nmaps = *mr->nmaps;
-		pthread_create(&mr->p_array[i], NULL, (void*) mr->mapfn, args_array+i);
+		mr->args_array[i].mr = mr;
+		mr->args_array[i].infd = open(inpath, O_RDONLY);
+		mr->args_array[i].id = i;
+		mr->args_array[i].nmaps = *mr->nmaps;
+		pthread_create(&mr->p_array[i], NULL, (void*) mr->mapfn, (mr->args_array)+i);
 	}
+	mr->rargs->mr = mr;
+	mr->rargs->outfd = open(outpath,O_RDWR |  O_CREAT);
+	mr->rargs->nmaps = *mr->nmaps;
+	pthread_create(&mr->p_array[*mr->nmaps], NULL, (void*) mr->reducefn, mr->rargs);
+
 	return 0;
 }
 
@@ -114,18 +115,18 @@ mr_finish(struct map_reduce *mr)
 {
 	int r = 0;
 	int i;
-	void *val = NULL;
+	void **val = NULL;
 
-	for (i = 0; i < *mr->nmaps;i++) //wait for each thread, then update id_finished.  Might be some optimization 
-	{								//if we waited on all threads simultaneously
-		pthread_join(mr->p_array[i], val);
-		if (val != NULL)
-			r++;
-		mr->id_finished[i] = 1;
-	}
-	pthread_join(mr->p_array[*mr->nmaps], val);
-	if (val != NULL)
-		r++;
+	// for (i = 0; i < *mr->nmaps;i++) //wait for each thread, then update id_finished.  Might be some optimization 
+	// {								//if we waited on all threads simultaneously
+	// 	pthread_join(mr->p_array[i], val);
+	// 	if (*(int*)*val != 0)
+	// 		r++;
+	// 	mr->id_finished[i] = 1;
+	// }
+	// pthread_join(mr->p_array[*mr->nmaps], val);
+	// if (*val != 0)
+	// 	r++;
 	return r;
 }
 

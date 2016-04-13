@@ -68,6 +68,20 @@ typedef int (*reduce_fn)(struct map_reduce *mr, int outfd, int nmaps);
 	struct buffer_node* prev;
 }Node;
 
+struct map_args{
+	struct map_reduce *mr;
+	int infd;
+	int id;
+	int nmaps;
+};
+
+struct reduce_args{
+	struct map_reduce *mr;
+	int outfd;
+	int nmaps;
+};
+
+
 struct map_reduce {
 	/* add your fields here */
 	map_fn mapfn;
@@ -80,6 +94,9 @@ struct map_reduce {
 	int *reduce_finished;
 	int *buffer_count;
 	pthread_t *p_array;
+	struct map_args *args_array;
+	struct reduce_args *rargs;
+
 };
 
 
