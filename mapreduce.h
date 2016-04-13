@@ -61,15 +61,28 @@ typedef int (*reduce_fn)(struct map_reduce *mr, int outfd, int nmaps);
  * not manipulate it in any way other than passing its pointer back to your
  * functions.
  */
+ typedef struct buffer_node
+{
+	struct kvpair *kv;
+	struct buffer_node* next;
+	struct buffer_node* prev;
+}Node;
+
 struct map_reduce {
 	/* add your fields here */
 	map_fn mapfn;
 	reduce_fn reducefn;
 	int *nmaps;
-	kvpair *mr_buffer;
+	Node **mr_heads;
+	Node **mr_tails;
+	pthread_mutex_t * lock_array;
+	int *id_finished;
+
 	int *buffer_count;
 	pthread_t *p_array;
 };
+
+
 
 /**
  * Structure which represents an arbitrary key-value pair.  This structure will
