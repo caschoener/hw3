@@ -77,7 +77,7 @@ struct map_reduce {
 	Node **mr_tails;
 	pthread_mutex_t * lock_array;
 	int *id_finished;
-
+	int *reduce_finished;
 	int *buffer_count;
 	pthread_t *p_array;
 };

@@ -20,8 +20,18 @@
 /* Size of shared memory buffers */
 #define MR_BUFFER_SIZE 1024
 
+struct map_args{
+	struct map_reduce *mr;
+	int infd;
+	int id;
+	int nmaps;
+};
 
-
+struct reduce_args{
+	struct map_reduce *mr;
+	int outfd;
+	int nmaps;
+};
 
 
 
@@ -42,9 +52,10 @@ mr_create(map_fn map, reduce_fn reduce, int threads)
 	mr -> mr_heads = malloc(sizeof(Node)*threads); 
 	mr -> mr_tails = malloc(sizeof(Node)*threads); 
 	mr -> buffer_count = m;
-	mr -> p_array = malloc(sizeof(pthread_t)*threads);
+	mr -> p_array = malloc(sizeof(pthread_t)*(threads+1));
 	mr -> lock_array = malloc(sizeof(pthread_mutex_t)*threads); //one lock per thread for accessing count
 	mr -> id_finished = calloc(threads, sizeof(int));
+	mr -> reduce_finished = calloc(1, sizeof(int));
 //replace with linked list from here down
 //counter to limit size, read from front write to back
 //pointer to tail updates every write
@@ -75,6 +86,7 @@ mr_destroy(struct map_reduce *mr)
 	free(mr-> buffer_count);
 	free(mr-> p_array);
 	free(mr -> lock_array);
+	free(mr-> reduce_finished);
 
 	free(mr); //free the structure ptr
 }
@@ -83,7 +95,16 @@ mr_destroy(struct map_reduce *mr)
 int
 mr_start(struct map_reduce *mr, const char *inpath, const char *outpath)
 {
-
+	int i;
+	struct map_args* args_array = malloc(*mr->nmaps * sizeof(struct map_args));
+	for (i = 0; i < *mr->nmaps;i++)
+	{
+		args_array[i].mr = mr;
+		args_array[i].infd = //TODOOOOO
+		args_array[i].id = i;
+		args_array[i].nmaps = *mr->nmaps;
+		pthread_create(&mr->p_array[i], NULL, (void*) mr->mapfn, args_array+i);
+	}
 	return 0;
 }
 
@@ -95,14 +116,16 @@ mr_finish(struct map_reduce *mr)
 	int i;
 	void *val = NULL;
 
-	for (i = 0; i < *mr->nmaps;i++)
-	{	
+	for (i = 0; i < *mr->nmaps;i++) //wait for each thread, then update id_finished.  Might be some optimization 
+	{								//if we waited on all threads simultaneously
 		pthread_join(mr->p_array[i], val);
 		if (val != NULL)
 			r++;
 		mr->id_finished[i] = 1;
 	}
-
+	pthread_join(mr->p_array[*mr->nmaps], val);
+	if (val != NULL)
+		r++;
 	return r;
 }
 
