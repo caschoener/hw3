@@ -50,6 +50,8 @@ mr_create(map_fn map, reduce_fn reduce, int threads)
 	mr -> buffer_count = m;
 	mr -> p_array = malloc(sizeof(pthread_t)*(threads+1));
 	mr -> lock_array = malloc(sizeof(pthread_mutex_t)*threads); //one lock per thread for accessing count
+	mr -> count_lock = malloc(sizeof(pthread_mutex_t)*threads); //for maximum thread safety
+	mr -> finished_lock = malloc(sizeof(pthread_mutex_t)*threads);//same
 	mr -> id_finished = calloc(threads, sizeof(int));
 	mr -> reduce_finished = calloc(1, sizeof(int));
 	mr -> args_array = malloc(*mr->nmaps * sizeof(struct map_args));
@@ -62,8 +64,8 @@ mr_create(map_fn map, reduce_fn reduce, int threads)
 //when list is empty, write to node and THEN update map_reduce->head pointer
 //consume checks if head pointer is null
 //no need for locks ever!
-	
-	for(int i = 0; i < threads ;i++) //need to initialize all heads and tails to NULL 
+	int i;
+	for(i = 0; i < threads ;i++) //need to initialize all heads and tails to NULL 
 	{
 		(mr-> mr_heads)[i] = NULL;
 		(mr-> mr_tails)[i] = NULL;
@@ -88,6 +90,8 @@ mr_destroy(struct map_reduce *mr)
 	free(mr-> reduce_finished);
 	free(mr->args_array);
 	free(mr->rargs);
+	free(mr->count_lock);
+	free(mr->finished_lock);
 
 	free(mr); //free the structure ptr
 }
@@ -108,12 +112,14 @@ mr_start(struct map_reduce *mr, const char *inpath, const char *outpath)
 		if (error != 0)
 			return -1;
 	}
-	// mr->rargs->mr = mr;
-	// mr->rargs->outfd = open(outpath,O_RDWR |  O_CREAT);
-	// mr->rargs->nmaps = *mr->nmaps;
-	// error = pthread_create(&mr->p_array[*mr->nmaps], NULL, (void*) reduce_helper, mr->rargs);
-	// if (error != 0)
-	// 	return -1;
+	mr->rargs->mr = mr;
+
+	mr->rargs->outfd = open(outpath,O_RDWR | O_CREAT | O_TRUNC, S_IWUSR | S_IRUSR);//tbd do this in helper
+	mr->rargs->nmaps = *mr->nmaps;
+	error = pthread_create(&mr->p_array[*mr->nmaps], NULL, (void*) reduce_helper, mr->rargs);
+	if (error != 0)
+		return -1;
+
 	return 0;
 }
 
@@ -122,24 +128,23 @@ int
 mr_finish(struct map_reduce *mr)
 {
 	 int r = 0;
-	// int i;
-	// void *val = NULL;
+	int i;
+	void *val = NULL;
 
-	// for (i = 0; i < *mr->nmaps;i++) //wait for each thread, then update id_finished.  Might be some optimization 
-	// {								//if we waited on all threads simultaneously
-	// 	pthread_join(mr->p_array[i], val);
-	// 	if ((intptr_t)val != 0)
-	// 		r++;
-	// 	mr->id_finished[i] = 1;
-	// }
-	// pthread_join(mr->p_array[*mr->nmaps], val);
-	// if ((intptr_t)val != 0)
-	// 	r++;
-	// for (i = 0;i < *mr->nmaps;i++) //close file descriptors
-	// {
-	// 	close(mr->args_array[i].infd);
-	// }
-	// close(mr->rargs->outfd);
+	for (i = 0; i < *mr->nmaps;i++) 
+	{
+		pthread_join(mr->p_array[i], val);
+		if ((intptr_t)val != 0)
+			r++;
+	}
+	pthread_join(mr->p_array[*mr->nmaps], val);
+	if ((intptr_t)val != 0)
+		r++;
+	for (i = 0;i < *mr->nmaps;i++) //close file descriptors
+	{
+		close(mr->args_array[i].infd);
+	}
+	close(mr->rargs->outfd);
 	 return r;
 }
 
@@ -157,18 +162,20 @@ mr_produce(struct map_reduce *mr, int id, const struct kvpair *kv)
 	mr->buffer_count[id]++;
 
 	Node* temp = malloc(sizeof(Node));
-	memcpy(temp->kv, kv, sizeof(struct kvpair));
-	if((mr-> mr_tails)[id] != NULL)
-	{	
-		temp->next = (mr->mr_tails)[id]; //place temp behind the old "tail"
-		((mr->mr_tails)[id])->prev = temp;
-		(mr->mr_tails)[id] = temp; //make temp the new tail
-	}
-	else //runs if tail == NULL
-	{
-		mr->mr_tails[id] = temp;
-		mr->mr_heads[id] = temp;
-	}
+	temp->kv = malloc(sizeof(struct kvpair));
+	//*(temp->kv) = *kv; //only copies pointers
+
+	temp->kv->key = malloc(kv->keysz); //this is what full copy should look like
+	temp->kv->value = malloc(kv->valuesz);
+	memcpy(temp->kv->key, kv->key, kv->keysz);
+	memcpy(temp->kv->value, kv->value, kv->valuesz);
+	temp->kv->keysz = kv->keysz;
+	temp->kv->valuesz = kv->valuesz;
+
+
+	temp->next = (mr->mr_tails)[id]; //place temp behind the old "tail" / top of stack
+	(mr->mr_tails)[id] = temp; //make temp the new tail
+
 
 	pthread_mutex_unlock(&(mr->lock_array[id]));
 
@@ -180,47 +187,61 @@ int
 mr_consume(struct map_reduce *mr, int id, struct kvpair *kv)
 {
 
-	while(mr->buffer_count[id] != 0) //wait until element exists
+	while(mr->buffer_count[id] == 0) //wait until element exists
 	{
 		if (mr->id_finished[id] == 1)
-			return 0;
+		{
+			if (mr->buffer_count[id] == 0)
+				return 0;
+		}
 	}
 	pthread_mutex_lock(&(mr->lock_array[id]));//wait until write is finished
+
 	mr->buffer_count[id]--;
+	//*kv = *(((mr->mr_tails)[id])->kv);
+	Node* temp = mr->mr_tails[id];
 
-	memcpy(kv, ((mr->mr_heads)[id])->kv, sizeof(struct kvpair));
-	Node* temp = mr->mr_heads[id];
-	if(mr->mr_heads[id]->prev!=NULL) // if head != tail
-	{
-		mr->mr_heads[id]->prev = mr->mr_heads[id]->prev->prev;
-		mr->mr_heads[id] = mr->mr_heads[id]->prev;
-	}
-	else //if head ==tail
-	{
-		mr->mr_heads[id] = NULL;
-		mr->mr_tails[id] = NULL;
 
-	}
+	memcpy(kv->key, temp->kv->key, temp->kv->keysz); // again, should be a full copy
+	memcpy(kv->value, temp->kv->value, temp->kv->valuesz);
+	kv->keysz = temp->kv->keysz;
+	kv->valuesz = temp->kv->valuesz;
 
-	free(temp);
+	(mr->mr_tails)[id] = (mr->mr_tails)[id]->next; //update tail/top to next, will be null if next is
+	free(temp->kv->key);
+	free(temp->kv->value);	
+	free(temp->kv);
+
+
+	free(temp); //free previous top of stack
+
+
+
 
 
 
 
 	pthread_mutex_unlock(&(mr->lock_array[id]));
-
 	return 1;
 }
 
 void map_helper(void* a)
 {
 	struct map_args * args = (struct map_args*) a;
-	int val = args->mr->mapfn(args->mr, args->infd, args->id, args->nmaps);
-	// might wanna deal with errors here
+
+	int val = (args->mr)->mapfn(args->mr, args->infd, args->id, args->nmaps);
+
+	args->mr->id_finished[args->id] = 1;
+
+
+	// TODO might wanna deal with errors here (ie return val)
 }
 
 void reduce_helper(void* a)
 {
+	struct reduce_args * args = (struct reduce_args*) a;
+
+	int val = (args->mr)->reducefn(args->mr, args->outfd, args->nmaps);
 
 }
 
