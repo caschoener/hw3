@@ -65,7 +65,6 @@ typedef int (*reduce_fn)(struct map_reduce *mr, int outfd, int nmaps);
 {
 	struct kvpair *kv;
 	struct buffer_node* next;
-	struct buffer_node* prev;
 }Node;
 
 struct map_args{

@@ -52,8 +52,8 @@ mr_create(map_fn map, reduce_fn reduce, int threads)
 	mr -> lock_array = malloc(sizeof(pthread_mutex_t)*threads); //one lock per thread for accessing count
 	mr -> count_lock = malloc(sizeof(pthread_mutex_t)*threads); //for maximum thread safety
 	mr -> finished_lock = malloc(sizeof(pthread_mutex_t)*threads);//same
-	mr -> id_finished = calloc(threads, sizeof(int));
-	mr -> reduce_finished = calloc(1, sizeof(int));
+	mr -> id_finished = calloc(threads+1, sizeof(int));
+	mr -> reduce_finished = calloc(1, sizeof(int)); //not currently used
 	mr -> args_array = malloc(*mr->nmaps * sizeof(struct map_args));
 	mr -> rargs = malloc(sizeof(struct reduce_args));
 
@@ -82,9 +82,9 @@ mr_destroy(struct map_reduce *mr)
 
 	free(mr-> mr_heads);
 	free(mr-> mr_tails);
-	free(mr->id_finished);
+	free((int*)mr->id_finished);
 	free(mr-> nmaps);
-	free(mr-> buffer_count);
+	free((int*)mr-> buffer_count);
 	free(mr-> p_array);
 	free(mr -> lock_array);
 	free(mr-> reduce_finished);
@@ -105,12 +105,16 @@ mr_start(struct map_reduce *mr, const char *inpath, const char *outpath)
 	for (i = 0; i < *mr->nmaps;i++)
 	{
 		mr->args_array[i].mr = mr;
-		mr->args_array[i].infd = open(inpath, O_RDONLY);
+		if ((mr->args_array[i].infd = open(inpath, O_RDONLY)) == -1) //handle error when opening
+			return -1;
 		mr->args_array[i].id = i;
 		mr->args_array[i].nmaps = *mr->nmaps;
 		error = pthread_create(&mr->p_array[i], NULL, (void*) &map_helper, (mr->args_array)+i);
 		if (error != 0)
+		{
+			close(mr->args_array[i].infd);
 			return -1;
+		}
 	}
 	mr->rargs->mr = mr;
 
@@ -118,7 +122,10 @@ mr_start(struct map_reduce *mr, const char *inpath, const char *outpath)
 	mr->rargs->nmaps = *mr->nmaps;
 	error = pthread_create(&mr->p_array[*mr->nmaps], NULL, (void*) reduce_helper, mr->rargs);
 	if (error != 0)
+	{
+		close(mr->rargs->outfd);
 		return -1;
+	}
 
 	return 0;
 }
@@ -134,18 +141,15 @@ mr_finish(struct map_reduce *mr)
 	for (i = 0; i < *mr->nmaps;i++) 
 	{
 		pthread_join(mr->p_array[i], val);
-		if ((intptr_t)val != 0)
+		if (mr->id_finished[i] == -1)
 			r++;
-	}
-	pthread_join(mr->p_array[*mr->nmaps], val);
-	if ((intptr_t)val != 0)
-		r++;
-	for (i = 0;i < *mr->nmaps;i++) //close file descriptors
-	{
 		close(mr->args_array[i].infd);
 	}
+	pthread_join(mr->p_array[*mr->nmaps], val);
 	close(mr->rargs->outfd);
-	 return r;
+	if (mr->id_finished[*mr->nmaps] == -1)
+		r++;
+	return r; //r = number of error'd threads
 }
 
 /* Called by the Map function each time it produces a key-value pair */
@@ -159,11 +163,10 @@ mr_produce(struct map_reduce *mr, int id, const struct kvpair *kv)
 	}
 
 	pthread_mutex_lock(&(mr->lock_array[id]));
-	mr->buffer_count[id]++;
+
 
 	Node* temp = malloc(sizeof(Node));
 	temp->kv = malloc(sizeof(struct kvpair));
-	//*(temp->kv) = *kv; //only copies pointers
 
 	temp->kv->key = malloc(kv->keysz); //this is what full copy should look like
 	temp->kv->value = malloc(kv->valuesz);
@@ -175,6 +178,7 @@ mr_produce(struct map_reduce *mr, int id, const struct kvpair *kv)
 
 	temp->next = (mr->mr_tails)[id]; //place temp behind the old "tail" / top of stack
 	(mr->mr_tails)[id] = temp; //make temp the new tail
+	mr->buffer_count[id]++;
 
 
 	pthread_mutex_unlock(&(mr->lock_array[id]));
@@ -187,36 +191,38 @@ int
 mr_consume(struct map_reduce *mr, int id, struct kvpair *kv)
 {
 
-	while(mr->buffer_count[id] == 0) //wait until element exists
+	while(mr->buffer_count[id] <= 0) //wait until element exists
 	{
-		if (mr->id_finished[id] == 1)
+		if (mr->id_finished[id] != 0) //if mapper has finished
 		{
-			if (mr->buffer_count[id] == 0)
+			if (mr->buffer_count[id] <= 0)
 				return 0;
 		}
 	}
+
 	pthread_mutex_lock(&(mr->lock_array[id]));//wait until write is finished
 
+	//printf("%i, %i\n", id, mr->buffer_count[id]);
 	mr->buffer_count[id]--;
-	//*kv = *(((mr->mr_tails)[id])->kv);
+
 	Node* temp = mr->mr_tails[id];
-
-
-	memcpy(kv->key, temp->kv->key, temp->kv->keysz); // again, should be a full copy
+	if (temp == NULL)
+	{
+		printf("ERRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR\n");
+		return 1;
+	}
+	memcpy(kv->key, temp->kv->key, temp->kv->keysz);
 	memcpy(kv->value, temp->kv->value, temp->kv->valuesz);
 	kv->keysz = temp->kv->keysz;
 	kv->valuesz = temp->kv->valuesz;
 
 	(mr->mr_tails)[id] = (mr->mr_tails)[id]->next; //update tail/top to next, will be null if next is
 	free(temp->kv->key);
-	free(temp->kv->value);	
+	free(temp->kv->value);
 	free(temp->kv);
 
 
 	free(temp); //free previous top of stack
-
-
-
 
 
 
@@ -230,8 +236,13 @@ void map_helper(void* a)
 	struct map_args * args = (struct map_args*) a;
 
 	int val = (args->mr)->mapfn(args->mr, args->infd, args->id, args->nmaps);
+	if(val == 0)
+		args->mr->id_finished[args->id] = 1;
+	else
+		args->mr->id_finished[args->id] = -1;
 
-	args->mr->id_finished[args->id] = 1;
+
+
 
 
 	// TODO might wanna deal with errors here (ie return val)
@@ -242,6 +253,9 @@ void reduce_helper(void* a)
 	struct reduce_args * args = (struct reduce_args*) a;
 
 	int val = (args->mr)->reducefn(args->mr, args->outfd, args->nmaps);
-
+	if(val == 0)
+		args->mr->id_finished[*args->mr->nmaps] = 1;
+	else
+		args->mr->id_finished[*args->mr->nmaps] = -1;
 }
 
