@@ -45,13 +45,11 @@ mr_create(map_fn map, reduce_fn reduce, int threads)
 	mr -> mapfn = map; //no need to malloc since map is a ptr to code
 	mr -> reducefn = reduce; //same as above
 	mr -> nmaps = n; //nmaps is pointer to int
-	mr -> mr_heads = malloc(sizeof(Node)*threads); 
-	mr -> mr_tails = malloc(sizeof(Node)*threads); 
+	mr -> mr_tails = malloc(sizeof(Node*)*threads); 
+	mr -> mr_heads = malloc(sizeof(Node*)*threads); 
 	mr -> buffer_count = m;
 	mr -> p_array = malloc(sizeof(pthread_t)*(threads+1));
 	mr -> lock_array = malloc(sizeof(pthread_mutex_t)*threads); //one lock per thread for accessing count
-	mr -> count_lock = malloc(sizeof(pthread_mutex_t)*threads); //for maximum thread safety
-	mr -> finished_lock = malloc(sizeof(pthread_mutex_t)*threads);//same
 	mr -> id_finished = calloc(threads+1, sizeof(int));
 	mr -> reduce_finished = calloc(1, sizeof(int)); //not currently used
 	mr -> args_array = malloc(*mr->nmaps * sizeof(struct map_args));
@@ -67,9 +65,9 @@ mr_create(map_fn map, reduce_fn reduce, int threads)
 	int i;
 	for(i = 0; i < threads ;i++) //need to initialize all heads and tails to NULL 
 	{
-		(mr-> mr_heads)[i] = NULL;
 		(mr-> mr_tails)[i] = NULL;
-		//int pthread_mutex_init(pthread_mutex_t *(mr->lock_array)[i], NULL); //something like this might be needed
+		(mr-> mr_heads)[i] = NULL;
+		pthread_mutex_init((mr->lock_array) + i, NULL); //something like this might be needed
 	}
 	
 	return mr;
@@ -80,8 +78,8 @@ void
 mr_destroy(struct map_reduce *mr)
 {		
 
-	free(mr-> mr_heads);
 	free(mr-> mr_tails);
+	free(mr-> mr_heads);
 	free((int*)mr->id_finished);
 	free(mr-> nmaps);
 	free((int*)mr-> buffer_count);
@@ -90,8 +88,6 @@ mr_destroy(struct map_reduce *mr)
 	free(mr-> reduce_finished);
 	free(mr->args_array);
 	free(mr->rargs);
-	free(mr->count_lock);
-	free(mr->finished_lock);
 
 	free(mr); //free the structure ptr
 }
@@ -175,9 +171,11 @@ mr_produce(struct map_reduce *mr, int id, const struct kvpair *kv)
 	temp->kv->keysz = kv->keysz;
 	temp->kv->valuesz = kv->valuesz;
 
-
-	temp->next = (mr->mr_tails)[id]; //place temp behind the old "tail" / top of stack
+	if((mr->mr_tails)[id] != NULL)
+		(mr->mr_tails)[id]->next = temp; //place temp behind the old "tail" / top of stack
 	(mr->mr_tails)[id] = temp; //make temp the new tail
+	if(mr->mr_heads[id] == NULL)
+		mr->mr_heads[id] = (mr->mr_tails)[id];
 	mr->buffer_count[id]++;
 
 
@@ -205,18 +203,18 @@ mr_consume(struct map_reduce *mr, int id, struct kvpair *kv)
 	//printf("%i, %i\n", id, mr->buffer_count[id]);
 	mr->buffer_count[id]--;
 
-	Node* temp = mr->mr_tails[id];
-	if (temp == NULL)
-	{
-		printf("ERRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR\n");
-		return 1;
-	}
+	Node* temp = mr->mr_heads[id];
 	memcpy(kv->key, temp->kv->key, temp->kv->keysz);
 	memcpy(kv->value, temp->kv->value, temp->kv->valuesz);
 	kv->keysz = temp->kv->keysz;
 	kv->valuesz = temp->kv->valuesz;
-
-	(mr->mr_tails)[id] = (mr->mr_tails)[id]->next; //update tail/top to next, will be null if next is
+	if((mr->mr_heads)[id] == (mr->mr_tails)[id]) //handle special case
+	{
+		(mr->mr_heads)[id] = NULL;
+		(mr->mr_tails)[id] = NULL;
+	}
+	else
+		(mr->mr_heads)[id] = (mr->mr_heads)[id]->next; //update head to head->next
 	free(temp->kv->key);
 	free(temp->kv->value);
 	free(temp->kv);

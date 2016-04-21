@@ -85,11 +85,9 @@ struct map_reduce {
 	map_fn mapfn;
 	reduce_fn reducefn;
 	int *nmaps;
-	Node **mr_heads;
 	Node **mr_tails;
+	Node **mr_heads;
 	pthread_mutex_t * lock_array;
-	pthread_mutex_t * count_lock;
-	pthread_mutex_t * finished_lock;
 	int *id_finished;
 	int *reduce_finished;
 	int *buffer_count;
